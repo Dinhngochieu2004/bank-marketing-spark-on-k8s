@@ -4,14 +4,24 @@
   <img src="docs/logo.webp" alt="Kubernetes + Apache Spark" width="400"/>
 </p>
 
-> Dành cho người mới. Mục tiêu: hiểu **tại sao** từng thành phần tồn tại trước khi đọc code.
-
 ---
 
-## Dự án làm gì?
+## Dự án này giải quyết vấn đề gì?
 
-Huấn luyện mô hình ML dự đoán khách hàng có đăng ký tiền gửi ngân hàng (`yes`/`no`) từ bộ dữ liệu **UCI Bank Marketing** (41.188 dòng, 21 cột).  
-Toàn bộ tính toán chạy trên **Apache Spark** bên trong cụm **Kubernetes** — như "đám mây mini" ngay trên máy tính.
+**Bài toán thực tế:** Ngân hàng có 41.188 bản ghi khách hàng. Họ cần biết: *"Khách nào sẽ đăng ký tiền gửi nếu gọi điện?"* — để không lãng phí cuộc gọi vào người sẽ từ chối.
+
+**Vấn đề kỹ thuật:** Dữ liệu lớn, nhiều cột phức tạp, lớp dữ liệu mất cân bằng (~89% nói "không", ~11% nói "có"). Chạy Python thường trên laptop sẽ chậm, không tận dụng được nhiều CPU, và không scale được khi dữ liệu tăng lên triệu dòng.
+
+**Giải pháp của dự án:**
+
+| Vấn đề | Giải pháp |
+|---|---|
+| Python chạy 1 CPU, chậm | Apache Spark chạy song song nhiều CPU cùng lúc |
+| Laptop hết RAM khi data lớn | Kubernetes phân phối tính toán ra nhiều máy |
+| Model xong thì mất | PVC (ổ đĩa K8s) lưu model bền vững |
+| Khó deploy lên server thật | Docker đóng gói → chạy được ở bất kỳ đâu |
+
+> **Nói đơn giản:** Thay vì chạy `python train.py` trên laptop, dự án chạy Spark job trên một cụm Kubernetes — nhanh hơn, có thể scale, và model được lưu an toàn.
 
 ---
 
@@ -19,115 +29,81 @@ Toàn bộ tính toán chạy trên **Apache Spark** bên trong cụm **Kubernet
 
 ![Sơ đồ kiến trúc](docs/architecture.png)
 
-Ba vùng chính:
-
-| Vùng | Vai trò |
-|---|---|
-| **Google Colab** | Thử nghiệm code, train nhanh ở chế độ local |
-| **Máy local** | Build Docker image, gửi manifest lên K8s |
-| **Kubernetes cluster** | Chạy Spark job thực sự, lưu model vào PVC |
-
----
-
-## Vùng 1 — Phát triển (Google Colab)
-
-| Thành phần | Vai trò |
-|---|---|
-| `bank-additional-full.csv` | Dữ liệu gốc, dấu phân cách `;` |
-| Notebook Colab | Viết thử PySpark 4.0.2 ở `local[*]` |
-| `PipelineModel` | Model GBT tốt nhất, lưu tại `models/bank_gbt_best` |
-
----
-
-## Vùng 2 — Đóng gói & Điều khiển
-
-| Thành phần | Vai trò |
-|---|---|
-| `src/bank_job.py` | Script Python chính — đọc CSV, train, lưu model |
-| `Dockerfile` | Đóng gói vào image `bank-spark:1.0` |
-| `k8s/spark-app.yml` | Manifest `SparkApplication` gửi lên K8s |
-| `kubectl apply` | Lệnh kích hoạt toàn bộ quá trình |
-| Spark UI `:4040` | Xem tiến trình job qua `kubectl port-forward` |
-
-**Tại sao phải Docker?** Kubernetes không chạy file `.py` trực tiếp — nó chỉ chạy container. Image chứa đủ Python, Spark, và code.
-
----
-
-## Vùng 3 — Kubernetes Cluster
-
-### 3.1 Spark Operator
+Có 3 bước lớn:
 
 ```
-kubectl apply spark-app.yml
-        │
-        ▼
-kube-apiserver  ──watch──►  Spark Operator
-                             └─► tạo Driver pod
+1. Viết code (Colab)  →  2. Đóng gói (Docker)  →  3. Chạy (Kubernetes)
 ```
-
-**Spark Operator** là một controller chạy trong namespace `spark-operator`.  
-Nó theo dõi object `SparkApplication` và tự động tạo Driver + Executor pod khi thấy spec mới.
-
-> Giống "quản đốc": bạn giao việc qua `spark-app.yml`, nó tự sắp xếp nhân công.
-
-> **Tại sao sơ đồ ghi "Kubeflow" ở Spark Operator?**  
-> Spark Operator được bảo trì tại `github.com/kubeflow/spark-operator` — thuộc tổ chức Kubeflow trên GitHub.  
-> Nhưng đây **không phải Kubeflow Pipelines** (nền tảng MLOps riêng). Dự án này chỉ dùng Spark Operator đơn thuần — không cài Kubeflow, không chạy lệnh Kubeflow nào. Sơ đồ ghi "Kubeflow" vì đó là tên tổ chức GitHub sở hữu repo.
 
 ---
 
-### 3.2 Driver pod
+## Bước 1 — Viết code trên Google Colab
 
-```
-Driver pod
-├── Khởi tạo SparkSession
-├── Đọc DAG (kế hoạch thực thi) từ bank_job.py
-├── Giao task cho Executor
-└── Thu kết quả, lưu model vào /models (PVC)
-```
-
-Driver là "não" — lên kế hoạch. Executor là "tay chân" — tính toán thực sự.
+Trước tiên thử nghiệm code PySpark ở chế độ local (`local[*]`) trên Colab — chạy được ngay, không cần dựng server.  
+Khi code ổn định mới chuyển lên Kubernetes.
 
 ---
 
-### 3.3 Executor pods (2 pod)
+## Bước 2 — Đóng gói bằng Docker
 
-Mỗi Executor: **1 CPU, 1 GiB RAM**.  
-Nhận partition dữ liệu từ Driver, xử lý song song, trả kết quả về. Khi job xong → pod tự xóa.
-
----
-
-### 3.4 PVC `bank-models`
-
-**PVC = Persistent Volume Claim** — ổ đĩa dùng chung bên trong cụm, **tồn tại độc lập với pod**.
-
-- Driver mount `/models` → ghi `PipelineModel` sau khi train
-- `bank-model-exporter` mount read-only → copy model ra máy local bằng `kubectl cp`
-
----
-
-## ❓ Giải thích 3 khái niệm hay bị nhầm
-
-### DAG — Directed Acyclic Graph
-
-DAG là **sơ đồ thực thi** mà Spark tự xây dựng khi đọc code `bank_job.py`.
+Kubernetes không chạy file `.py` trực tiếp. Nó chỉ chạy **container** (gói phần mềm hoàn chỉnh).
 
 ```
-đọc CSV → lọc cột → encode → train GBT → ghi model
-   A    →    B    →    C   →     D     →     E
+bank_job.py + Python + Spark  →  Docker build  →  image bank-spark:1.0
 ```
 
-Mỗi bước là một node, mũi tên là phụ thuộc — không có vòng lặp (acyclic).  
-Spark tối ưu DAG này trước khi thực sự chạy, ghép các bước nhỏ lại để giảm đọc/ghi đĩa.  
-Bạn xem DAG trực quan tại Spark UI `:4040` → tab **Stages**.
-
-> **Dự án này KHÔNG dùng Kubeflow.** Kubeflow là nền tảng MLOps riêng trên K8s, có DAG pipeline riêng (Kubeflow Pipelines). Dự án này chỉ dùng Spark DAG Scheduler — built-in trong Spark.
+Image này chứa đủ mọi thứ cần thiết — copy sang máy khác vẫn chạy được.
 
 ---
 
-### SA — ServiceAccount
+## Bước 3 — Chạy trên Kubernetes
 
-SA = **ServiceAccount** trong Kubernetes — định danh cho pod, dùng để cấp quyền.
+### Spark Operator — "quản đốc tự động"
+
+Thay vì tự tay tạo từng pod, bạn chỉ cần viết một file `spark-app.yml` mô tả job cần chạy.  
+**Spark Operator** đọc file đó và tự làm hết: tạo Driver, tạo Executor, dọn dẹp sau khi xong.
+
+```
+kubectl apply -f k8s/spark-app.yml
+       ↓
+Spark Operator đọc spec
+       ↓
+Tạo Driver pod  →  Driver tạo 2 Executor pod  →  Train model  →  Lưu vào PVC
+```
+
+> **Về chữ "Kubeflow" trong sơ đồ:** Spark Operator được bảo trì bởi tổ chức Kubeflow trên GitHub (`github.com/kubeflow/spark-operator`). Nhưng dự án này **không dùng Kubeflow** (nền tảng MLOps riêng). Chỉ dùng Spark Operator — một công cụ độc lập, chỉ liên quan đến Kubeflow ở chỗ cùng tổ chức.
+
+### Driver và Executor — "não" và "tay chân"
+
+- **Driver pod**: lên kế hoạch, chia việc, thu kết quả. Chỉ có 1.
+- **Executor pod**: làm việc thực sự, chạy song song. Dự án này có 2.
+
+```
+Driver (não)  →  giao việc  →  Executor 1  ┐
+                             →  Executor 2  ┘  → kết quả về Driver → lưu model
+```
+
+---
+
+## 3 khái niệm hay gặp trong sơ đồ
+
+### DAG — Kế hoạch thực thi của Spark
+
+Khi bạn viết code Spark (`đọc CSV → lọc → encode → train → lưu`), Spark **không chạy ngay**.  
+Nó xây một sơ đồ gọi là **DAG** (đồ thị bước không vòng lặp) rồi tối ưu trước khi thực sự tính toán.
+
+```
+đọc CSV → lọc cột → encode → train GBT → lưu model
+   A    →    B    →    C   →     D     →      E
+```
+
+Mục đích: giảm đọc/ghi đĩa, ghép các bước nhỏ lại — chạy nhanh hơn.  
+Bạn xem trực quan tại Spark UI `:4040` → tab **Stages**.
+
+### SA — ServiceAccount (Tài khoản dịch vụ)
+
+Trong Kubernetes, mọi pod đều cần **danh tính** để hệ thống biết pod đó được phép làm gì.  
+**SA (ServiceAccount)** là danh tính đó.
 
 Trong `k8s/spark-app.yml`:
 ```yaml
@@ -135,69 +111,43 @@ driver:
   serviceAccount: spark-operator-spark
 ```
 
-Driver pod chạy với SA `spark-operator-spark`. SA này được Spark Operator tạo tự động và cấp quyền:
+Driver pod chạy với SA `spark-operator-spark` — được Spark Operator tạo tự động, có quyền:
 - Tạo/xóa Executor pod
-- Đọc ConfigMap
-- Cập nhật trạng thái SparkApplication
+- Đọc cấu hình (ConfigMap)
+- Báo cáo trạng thái job
 
-Nếu không có SA đúng → Driver không thể tạo Executor → job thất bại với lỗi RBAC.
+Nếu sai SA → Driver không tạo được Executor → job thất bại với lỗi `Forbidden`.
+
+### PVC — Ổ đĩa bền vững
+
+Pod chết thì dữ liệu trong pod mất. **PVC (Persistent Volume Claim)** là ổ đĩa tồn tại độc lập với pod.
+
+```
+Driver pod ghi model vào PVC  →  Driver pod chết  →  PVC vẫn còn
+                                                      ↓
+                               Exporter pod đọc PVC  →  copy ra máy local
+```
+
+**PVC chỉ bị xóa khi bạn chủ động chạy** `kubectl delete pvc bank-models`.
 
 ---
 
-### PVC có chết khi Pod chết không?
-
-**Không.** PVC tồn tại độc lập với pod.
-
-```
-Pod Driver   ──mount──►  PVC bank-models  (ghi model)
-Pod chết ✗               PVC vẫn còn ✓
-Pod Exporter ──mount──►  PVC bank-models  (đọc model)
-```
-
-Pod là tạm thời — sinh ra để làm việc rồi mất. PVC là bền vững — dữ liệu không bị mất khi pod xóa.  
-PVC chỉ bị xóa khi bạn chủ động chạy `kubectl delete pvc bank-models`.
-
----
-
-## ML Pipeline — 2 giai đoạn
+## ML Pipeline — Dữ liệu đi qua những bước nào?
 
 ![Sơ đồ ML Pipeline](docs/pipeline.png)
 
-### Giai đoạn 1 — Chuẩn bị dữ liệu
+**Giai đoạn 1 — Làm sạch dữ liệu:**
+- Bỏ cột `duration` (thời gian cuộc gọi) — chỉ biết sau khi kết quả có rồi, dùng để train là gian lận dữ liệu.
+- Cân bằng lớp: 89% "no" / 11% "yes" → model sẽ bỏ sót khách tiềm năng nếu không xử lý.
 
-- **Bỏ `duration`**: thời gian cuộc gọi chỉ biết sau khi có kết quả → data leakage.
-- **Cân bằng lớp**: dữ liệu gốc ~89% "no" / ~11% "yes" → model sẽ bỏ sót khách tiềm năng nếu không xử lý.
-
-### Giai đoạn 2 — Spark ML Pipeline
-
-- **GBT** (Gradient-Boosted Trees): model ensemble mạnh với dữ liệu có cấu trúc.
-- **CrossValidator**: tìm siêu tham số tốt nhất qua 2-fold CV.
-- **AUC-PR thay AUC-ROC**: với dữ liệu mất cân bằng, AUC-PR phản ánh chính xác hơn khả năng phát hiện lớp thiểu số.
+**Giai đoạn 2 — Train model:**
+- Dùng **GBT** (Gradient-Boosted Trees) — mạnh với dữ liệu có cấu trúc kiểu bảng.
+- **CrossValidator** tìm tham số tốt nhất qua 2-fold CV.
+- Đánh giá bằng **AUC-PR** thay AUC-ROC vì dữ liệu mất cân bằng.
 
 ---
 
-## Cấu trúc thư mục
-
-```
-bank-marketing-spark-k8s/
-├── src/
-│   └── bank_job.py              # Toàn bộ logic ML pipeline
-├── k8s/
-│   ├── spark-app.yml            # SparkApplication manifest (entry point K8s)
-│   ├── model-pvc.yml            # Khai báo PVC bank-models (1 GiB)
-│   └── model-exporter.yml       # Pod copy model ra local
-├── data/
-│   └── bank-additional-full.csv
-├── Dockerfile                   # Build image bank-spark:1.0
-├── requirements.txt
-└── bank_gbt_best/               # Model đã train (output cục bộ)
-    ├── model/
-    └── metrics.json
-```
-
----
-
-## Chạy thực tế (step-by-step)
+## Chạy thực tế
 
 ```bash
 # 1. Build image
@@ -209,10 +159,10 @@ kubectl apply -f k8s/model-pvc.yml
 # 3. Gửi Spark job
 kubectl apply -f k8s/spark-app.yml
 
-# 4. Theo dõi Driver pod
+# 4. Theo dõi log Driver
 kubectl logs -f -n spark-jobs $(kubectl get pods -n spark-jobs -o name | grep driver)
 
-# 5. Xem Spark UI
+# 5. Xem Spark UI (DAG, Stages)
 kubectl port-forward -n spark-jobs svc/bank-marketing-ui-svc 4040:4040
 
 # 6. Copy model ra local sau khi job xong
@@ -222,19 +172,34 @@ kubectl cp spark-jobs/bank-model-exporter:/models ./bank_gbt_best
 
 ---
 
-## Bảng tra cứu nhanh
+## Cấu trúc thư mục
 
-| Khái niệm | Giải thích |
+```
+bank-marketing-spark-k8s/
+├── src/bank_job.py              # Toàn bộ logic ML pipeline
+├── k8s/
+│   ├── spark-app.yml            # Gửi job lên K8s (entry point)
+│   ├── model-pvc.yml            # Tạo ổ đĩa PVC
+│   └── model-exporter.yml       # Copy model ra local
+├── data/bank-additional-full.csv
+├── Dockerfile
+└── bank_gbt_best/               # Model output
+```
+
+---
+
+## Từ điển nhanh
+
+| Từ | Nghĩa đơn giản |
 |---|---|
-| **Pod** | Đơn vị nhỏ nhất K8s, chứa 1+ container |
-| **Namespace** | Nhóm logic tách biệt tài nguyên (như thư mục) |
-| **CRD** | Custom Resource Definition — mở rộng API K8s, ví dụ `SparkApplication` |
-| **SA (ServiceAccount)** | Định danh cho pod, dùng cấp quyền RBAC |
-| **DAG** | Kế hoạch thực thi Spark — đồ thị bước không vòng lặp |
-| **PVC** | Ổ đĩa bền vững, **sống độc lập** với pod |
-| **Spark Driver** | Tiến trình điều phối job, tạo Executor |
-| **Spark Executor** | Tiến trình tính toán song song |
-| **Pipeline (MLlib)** | Chuỗi bước: fit một lần, transform nhiều lần |
-| **CrossValidator** | Tìm siêu tham số tốt nhất qua k-fold CV |
-| **AUC-PR** | Metric tốt hơn AUC-ROC khi dữ liệu mất cân bằng |
-| **Spark Operator** | Controller K8s tự động tạo Driver/Executor từ `SparkApplication` |
+| **Pod** | Một "hộp" chạy code, đơn vị nhỏ nhất trong K8s |
+| **Namespace** | Nhóm tách biệt tài nguyên K8s (như thư mục) |
+| **CRD / SparkApplication** | K8s mở rộng thêm loại object mới — `SparkApplication` là ví dụ |
+| **SA (ServiceAccount)** | Danh tính của pod, dùng để cấp quyền |
+| **DAG** | Sơ đồ kế hoạch thực thi Spark, không có vòng lặp |
+| **PVC** | Ổ đĩa bền vững, sống độc lập với pod |
+| **Driver** | Pod "não" — điều phối toàn bộ Spark job |
+| **Executor** | Pod "tay chân" — tính toán song song |
+| **Spark Operator** | Controller tự động tạo Driver/Executor từ `SparkApplication` |
+| **GBT** | Gradient-Boosted Trees — thuật toán ML dùng trong dự án |
+| **AUC-PR** | Metric đánh giá model tốt hơn khi dữ liệu mất cân bằng |
