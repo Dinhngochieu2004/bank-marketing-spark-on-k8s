@@ -70,6 +70,10 @@ Nó theo dõi object `SparkApplication` và tự động tạo Driver + Executor
 
 > Giống "quản đốc": bạn giao việc qua `spark-app.yml`, nó tự sắp xếp nhân công.
 
+> **Tại sao sơ đồ ghi "Kubeflow" ở Spark Operator?**  
+> Spark Operator được bảo trì tại `github.com/kubeflow/spark-operator` — thuộc tổ chức Kubeflow trên GitHub.  
+> Nhưng đây **không phải Kubeflow Pipelines** (nền tảng MLOps riêng). Dự án này chỉ dùng Spark Operator đơn thuần — không cài Kubeflow, không chạy lệnh Kubeflow nào. Sơ đồ ghi "Kubeflow" vì đó là tên tổ chức GitHub sở hữu repo.
+
 ---
 
 ### 3.2 Driver pod
