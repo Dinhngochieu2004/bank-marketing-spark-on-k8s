@@ -1,0 +1,46 @@
+# k8s/spark-app.yml
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: bank-marketing
+  namespace: spark-jobs
+spec:
+  type: Python
+  mode: cluster
+  image: bank-spark:1.0
+  imagePullPolicy: IfNotPresent
+  mainApplicationFile: local:///opt/spark/work-dir/bank_job.py
+  sparkVersion: "4.0.2"
+  restartPolicy:
+    type: OnFailure
+    onFailureRetries: 3
+    onFailureRetryInterval: 10
+    onSubmissionFailureRetries: 5
+    onSubmissionFailureRetryInterval: 20
+  volumes:
+    - name: model-volume
+      persistentVolumeClaim:
+        claimName: bank-models
+  driver:
+    cores: 1
+    coreLimit: "1000m"
+    memory: "1g"
+    podSecurityContext:
+      fsGroup: 185
+    volumeMounts:
+      - name: model-volume
+        mountPath: /models
+    labels:
+      version: 4.0.2
+    serviceAccount: spark-operator-spark
+  executor:
+    cores: 1
+    instances: 2
+    memory: "1g"
+    podSecurityContext:
+      fsGroup: 185
+    volumeMounts:
+      - name: model-volume
+        mountPath: /models
+    labels:
+      version: 4.0.2

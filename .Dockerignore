@@ -1,0 +1,22 @@
+# Chặn tài liệu, báo cáo, slide
+docs/
+bao-cao/
+*.docx
+*.pptx
+*.pdf
+
+# Chặn notebook Colab
+notebooks/
+*.ipynb
+
+# Chặn cấu hình K8s và Git
+k8s/
+*.yaml
+.git
+.gitignore
+README.md
+
+# Chặn file rác
+.vscode/
+.DS_Store
+__pycache__/
